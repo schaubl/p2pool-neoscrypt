@@ -25,6 +25,8 @@ from util import fixargparse, jsonrpc, variable, deferral, math, logging, switch
 from . import networks, web, work
 import p2pool, p2pool.data as p2pool_data, p2pool.node as p2pool_node
 
+WEB_UI_PORT = 19334
+
 class keypool():
     keys = []
     keyweights = []
@@ -72,7 +74,7 @@ class keypool():
         return self.payouttotal
 
 @defer.inlineCallbacks
-def main(args, net, datadir_path, merged_urls, worker_endpoint):
+def main(args, net, datadir_path, merged_urls, worker_endpoint, web_ui_endpoint):
     try:
         print 'p2pool (version %s)' % (p2pool.__version__,)
         print
@@ -288,8 +290,11 @@ def main(args, net, datadir_path, merged_urls, worker_endpoint):
         worker_interface.WorkerInterface(caching_wb).attach_to(web_root, get_handler=lambda request: request.redirect('/static/'))
         web_serverfactory = server.Site(web_root)
         
-        serverfactory = switchprotocol.FirstByteSwitchFactory({'{': stratum.StratumServerFactory(caching_wb)}, web_serverfactory)
+        serverfactory = switchprotocol.FirstByteSwitchFactory({}, stratum.StratumServerFactory(caching_wb))
         deferral.retry('Error binding to worker port:', traceback=False)(reactor.listenTCP)(worker_endpoint[1], serverfactory, interface=worker_endpoint[0])
+
+        ui_serverfactory = switchprotocol.FirstByteSwitchFactory({}, web_serverfactory)
+        deferral.retry('Error binding to web ui port:', traceback=False)(reactor.listenTCP)(web_ui_endpoint[1], ui_serverfactory, interface=web_ui_endpoint[0])
         
         with open(os.path.join(os.path.join(datadir_path, 'ready_flag')), 'wb') as f:
             pass
@@ -300,7 +305,7 @@ def main(args, net, datadir_path, merged_urls, worker_endpoint):
         
         # done!
         print 'Started successfully!'
-        print 'Go to http://127.0.0.1:%i/ to view graphs and statistics!' % (worker_endpoint[1],)
+        print 'Go to http://127.0.0.1:%i/ to view graphs and statistics!' % (web_ui_endpoint[1],)
         if args.donation_percentage > 1.1:
             print '''Donating %.1f%% of work towards P2Pool's development. Thanks for the tip!''' % (args.donation_percentage,)
         elif args.donation_percentage < .9:
@@ -509,8 +514,13 @@ def run():
         help='listen on PORT on interface with ADDR for RPC connections from miners (default: all interfaces, %s)' % ', '.join('%s:%i' % (name, net.WORKER_PORT) for name, net in sorted(realnets.items())),
         type=str, action='store', default=None, dest='worker_endpoint')
     worker_group.add_argument('-f', '--fee', metavar='FEE_PERCENTAGE',
-        help='''charge workers mining to their own bitcoin address (by setting their miner's username to a bitcoin address) this percentage fee to mine on your p2pool instance. Amount displayed at http://127.0.0.1:WORKER_PORT/fee (default: 0)''',
+        help='''charge workers mining to their own bitcoin address (by setting their miner's username to a bitcoin address) this percentage fee to mine on your p2pool instance. Amount displayed at http://127.0.0.1:WEB_UI_PORT/fee (default: 0)''',
         type=float, action='store', default=0, dest='worker_fee')
+
+    web_ui_group = parser.add_argument_group('web user interface')
+    web_ui_group.add_argument('-u', '--ui-port', metavar='PORT or ADDR:PORT',
+        help='listen on PORT on interface with ADDR for HTTP connections from clients (default: all interfaces, %s)' % ', '.join('%s:%i' % (name, WEB_UI_PORT) for name, net in sorted(realnets.items())),
+        type=str, action='store', default=None, dest='web_ui_endpoint')
     
     bitcoind_group = parser.add_argument_group('bitcoind interface')
     bitcoind_group.add_argument('--bitcoind-config-path', metavar='BITCOIND_CONFIG_PATH',
@@ -605,6 +615,14 @@ def run():
     else:
         addr, port = args.worker_endpoint.rsplit(':', 1)
         worker_endpoint = addr, int(port)
+
+    if args.web_ui_endpoint is None:
+        web_ui_endpoint = '', WEB_UI_PORT
+    elif ':' not in args.web_ui_endpoint:
+        web_ui_endpoint = '', int(args.web_ui_endpoint)
+    else:
+        addr, port = args.web_ui_endpoint.rsplit(':', 1)
+        web_ui_endpoint = addr, int(port)
     
     if args.address is not None and args.address != 'dynamic':
         try:
@@ -665,5 +683,6 @@ def run():
     if not args.no_bugreport:
         log.addObserver(ErrorReporter().emit)
     
-    reactor.callWhenRunning(main, args, net, datadir_path, merged_urls, worker_endpoint)
+    reactor.callWhenRunning(main, args, net, datadir_path, merged_urls, worker_endpoint, web_ui_endpoint)
     reactor.run()
+
